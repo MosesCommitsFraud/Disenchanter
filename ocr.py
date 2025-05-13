@@ -1,6 +1,6 @@
 # Placeholder for OCR logic using pytesseract
 import pytesseract
-from PIL import Image, ImageDraw # Added ImageDraw for future box drawing (though not used in this step directly in ocr.py)
+from PIL import Image, ImageDraw, ImageEnhance # Added ImageEnhance
 import os
 import requests # For downloading models
 from pathlib import Path # For cross-platform path handling
@@ -94,39 +94,46 @@ def transcribe_image(image_path: str, language_code: str, specific_model_dir: Pa
         os.environ['TESSDATA_PREFIX'] = str(tessdata_dir_to_use)
         custom_config = f'--tessdata-dir {tessdata_dir_to_use.as_posix()}' # Keep as_posix for Tesseract path
 
-        image_to_process: Image.Image | str = image_path
+        # Load the image with Pillow for preprocessing
+        pil_image_for_ocr: Image.Image
+        try:
+            pil_image_for_ocr = Image.open(image_path)
+        except Exception as e:
+            return f"Error opening image for OCR: {e}", None
+
         roi_offset_x, roi_offset_y = 0, 0
 
         if roi and len(roi) == 4:
             try:
-                pil_image = Image.open(image_path)
                 x, y, w, h = roi
-                # Pillow crop box is (left, upper, right, lower)
                 crop_box = (int(x), int(y), int(x + w), int(y + h))
-                
-                # Ensure crop box is within image bounds
-                img_w, img_h = pil_image.size
+                img_w, img_h = pil_image_for_ocr.size
                 crop_box = (
                     max(0, crop_box[0]), 
                     max(0, crop_box[1]), 
                     min(img_w, crop_box[2]), 
                     min(img_h, crop_box[3])
                 )
-                
-                if crop_box[2] > crop_box[0] and crop_box[3] > crop_box[1]: # Check if valid crop area remains
-                    image_to_process = pil_image.crop(crop_box)
+                if crop_box[2] > crop_box[0] and crop_box[3] > crop_box[1]:
+                    pil_image_for_ocr = pil_image_for_ocr.crop(crop_box)
                     roi_offset_x, roi_offset_y = crop_box[0], crop_box[1]
                     print(f"OCR: Processing ROI: {crop_box}, offset for coords: ({roi_offset_x}, {roi_offset_y})")
                 else:
-                    print(f"OCR Warning: ROI {roi} resulted in an invalid crop area {crop_box} for image size {pil_image.size}. Processing full image.")
-                    # Fallthrough to process full image if crop is invalid
-
+                    print(f"OCR Warning: ROI {roi} resulted in an invalid crop area. Processing full image (or previous crop stage).")
             except Exception as e:
-                print(f"OCR Warning: Error processing ROI {roi}: {e}. Processing full image.")
-                # Fallthrough to process full image
+                print(f"OCR Warning: Error processing ROI {roi}: {e}. Processing full image (or previous crop stage).")
 
-        # Tesseract can take a PIL Image object or a file path
-        data = pytesseract.image_to_data(image_to_process, lang=language_code, config=custom_config, output_type=pytesseract.Output.DICT)
+        # Preprocessing steps for Tesseract
+        # 1. Convert to grayscale
+        processed_image = pil_image_for_ocr.convert('L')
+        # 2. Enhance contrast (factor can be tuned, 1.0 is original contrast)
+        contrast_factor = 1.5 
+        enhancer = ImageEnhance.Contrast(processed_image)
+        processed_image = enhancer.enhance(contrast_factor)
+        print(f"OCR: Image preprocessed (grayscale, contrast x{contrast_factor})")
+
+        # Tesseract takes the preprocessed PIL Image object
+        data = pytesseract.image_to_data(processed_image, lang=language_code, config=custom_config, output_type=pytesseract.Output.DICT)
         
         word_data = []
         plain_text_lines = []
@@ -145,7 +152,10 @@ def transcribe_image(image_path: str, language_code: str, specific_model_dir: Pa
                         'top': int(data['top'][i]) + roi_offset_y,   # Adjust by ROI offset
                         'width': int(data['width'][i]),
                         'height': int(data['height'][i]),
-                        'conf': conf
+                        'conf': conf,
+                        'block_num': int(data['block_num'][i]), # Add block number
+                        'par_num': int(data['par_num'][i]),   # Add paragraph number
+                        'line_num': int(data['line_num'][i])   # Add line number
                     }
                     word_data.append(word_info)
                     word_id_counter += 1 # Increment for next word

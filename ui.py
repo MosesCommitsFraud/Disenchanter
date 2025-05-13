@@ -528,18 +528,15 @@ class DisenchanterApp(QMainWindow):
             print(f"UI: Passing ROI to transcribe_image: {roi_to_pass}")
 
         try:
-            # Ensure word_data_iter is initialized based on fresh or existing self.current_word_data
-            # This part seems problematic in previous code. It should probably be reset or handled carefully.
-            # For now, let's assume transcribe_image gives fresh data and we re-populate.
-            
             # Define punctuation characters for stripping (used in word comparison)
-            punctuation_chars = (
-                ".,;:!?()[]{}<>"
-                "\\\"'`-~" # Escaped backslash and double quote
-                "\u00AB\u00BB\u201E\u201C\u2013\u2014\u2019\u2018\u201A\u201D"
-                "*&^%$#@+/\\|_" # Escaped backslash
-            )
-            
+            # This might be less critical now as we are not matching against plain_text for IDs
+            # punctuation_chars = (
+            #     ".,;:!?()[]{}<>"
+            #     "\\\"'`-~" # Escaped backslash and double quote
+            #     "\u00AB\u00BB\u201E\u201C\u2013\u2014\u2019\u2018\u201A\u201D"
+            #     "*&^%$#@+/\\|_" # Escaped backslash
+            # )
+
             plain_text, word_data_list = transcribe_image(
                 self.selected_file_path, 
                 actual_model_code,
@@ -551,9 +548,8 @@ class DisenchanterApp(QMainWindow):
                 self.output_text_area.clear()
                 cursor = self.output_text_area.textCursor()
 
-                # Standard font for the text area
                 base_format = QTextCharFormat()
-                font = self.output_text_area.font() # Get current font from widget
+                font = self.output_text_area.font()
                 base_format.setFont(font)
                 
                 # Insert heading
@@ -561,52 +557,51 @@ class DisenchanterApp(QMainWindow):
                 heading_font = heading_format.font()
                 heading_font.setBold(True)
                 heading_format.setFont(heading_font)
-                cursor.insertText(f"Result ('{display_name_for_output}'):\\n", heading_format)
-                
-                # For simplicity in line breaking, we use the structure of plain_text from ocr.py
-                # We assume word_data_list is in the correct reading order and matches plain_text words.
-                if plain_text: # Ensure plain_text is not None
-                    lines = plain_text.split('\\n')
-                    for i, line_text in enumerate(lines):
-                        words_in_line = line_text.split(' ')
-                        for j, word_str_from_plain_text in enumerate(words_in_line):
-                            if not word_str_from_plain_text: # Skip empty strings from multiple spaces
-                                if j < len(words_in_line) -1: # If not the last potential word, add a space
-                                     cursor.insertText(" ", base_format)
-                                continue
-                            
-                            try:
-                                current_word_info = word_data_list[j]
-                                # Basic check: does the word from plain_text somewhat match the word_data text?
-                                # This isn't perfect but helps align. Tesseract sometimes has subtle differences.
-                                # A more robust method would be to have ocr.py ensure word_ids map directly to segments of plain_text.
-                                if word_str_from_plain_text.strip(punctuation_chars) == current_word_info['text'].strip(punctuation_chars):
-                                    char_format_for_word = QTextCharFormat(base_format)
-                                    char_format_for_word.setProperty(QTextCharFormat.Property.UserProperty + 1, current_word_info['word_id'])
-                                    cursor.insertText(current_word_info['text'], char_format_for_word)
-                                else:
-                                    # Fallback: insert the word from plain_text if mismatch, apply no ID
-                                    # Or try to find the next matching word_info - this can get complex.
-                                    # For now, insert plain_text word and advance word_data_iter if possible.
-                                    cursor.insertText(word_str_from_plain_text, base_format)
-                                    # This might mean we are out of sync. To resync, one might search word_data_iter.
-                                    # For now, this example assumes a mostly clean 1:1 mapping for simplicity of example.
-                            except IndexError: # Ran out of word_data items
-                                cursor.insertText(word_str_from_plain_text, base_format) # Insert remaining plain_text words
-                            
-                            if j < len(words_in_line) - 1: # Add space if not the last word in the line
-                                cursor.insertText(" ", base_format)
-                        if i < len(lines) - 1: # Add newline if not the last line
-                            cursor.insertBlock() # Inserts a new paragraph/block, which means a newline
-                else: # OCR might have returned an error string in plain_text or empty result
-                    cursor.insertText(plain_text if plain_text else "Error: OCR returned no text and no word data.", base_format)
+                cursor.insertText(f"Result ('{display_name_for_output}'):\n", heading_format) # Note: \n here will be a literal backslash-n
+                cursor.insertBlock() # Actual newline after heading
 
-                print(f"OK. Words: {len(word_data_list)}")
-            else: # Error from transcribe_image
+                if not word_data_list: # No words returned from OCR
+                    fallback_text = plain_text if plain_text else "OCR returned no words."
+                    if not fallback_text.strip(): fallback_text = "OCR returned empty result."
+                    cursor.insertText(fallback_text, base_format)
+                else:
+                    last_block = -1
+                    last_par = -1
+                    last_line = -1
+                    first_word_in_document = True
+
+                    for word_idx, word_info in enumerate(word_data_list):
+                        current_block = word_info['block_num']
+                        current_par = word_info['par_num']
+                        current_line = word_info['line_num']
+
+                        if not first_word_in_document:
+                            # Check for new block, paragraph, or line
+                            if current_block > last_block or \
+                               current_par > last_par or \
+                               current_line > last_line:
+                                cursor.insertBlock() # Newline for new line/paragraph/block
+                                # Heuristic: If it's a new block or paragraph, maybe add an extra empty line (visual spacing)
+                                # This is a simple heuristic; real paragraph spacing is more complex.
+                                if current_block > last_block or current_par > last_par:
+                                    pass # Could insert another block here if desired: cursor.insertBlock()
+                            else: # Same line, different word
+                                cursor.insertText(" ", base_format) # Space between words on the same line
+                        
+                        char_format_for_word = QTextCharFormat(base_format)
+                        char_format_for_word.setProperty(QTextCharFormat.Property.UserProperty + 1, word_info['word_id'])
+                        cursor.insertText(word_info['text'], char_format_for_word)
+                        
+                        last_block, last_par, last_line = current_block, current_par, current_line
+                        first_word_in_document = False
+
+                print(f"OK. Words processed for text area: {len(word_data_list)}")
+            else: # Error from transcribe_image (word_data_list is None)
                 self.current_word_data = []
                 self.image_viewer_label.set_word_data([])
-                self.output_text_area.setPlainText(plain_text) # Show error string
-                print(f"OCR Err: {plain_text}")
+                error_message = plain_text if plain_text else "Unknown OCR error."
+                self.output_text_area.setPlainText(error_message) # Show error string
+                print(f"OCR Err: {error_message}")
         except Exception as e:
             self.current_word_data = []
             self.image_viewer_label.set_word_data([])
