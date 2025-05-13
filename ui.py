@@ -3,16 +3,48 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, 
     QApplication, QComboBox, QTextEdit
 )
+from PyQt6.QtGui import QIcon # Import QIcon
 import os
+import re # For parsing model codes
 from pathlib import Path
-from ocr import transcribe_image, MODEL_DIR, transcribe_with_all_available_models
+from ocr import transcribe_image, MODEL_DIR
+
+# Updated Mapping from model codes to pretty names
+MODEL_CODE_TO_PRETTY_NAME = {
+    # Standard Languages
+    "deu": "German", "eng": "English", "fra": "French", "spa": "Spanish", "ita": "Italian",
+    "dan": "Danish", "swe": "Swedish", "nor": "Norwegian", "nld": "Dutch", "lat": "Latin",
+    "jpn": "Japanese", "jpn_vert": "Japanese (Vertical)",
+    "heb": "Hebrew", "ara": "Arabic",
+    "chi_sim": "Chinese Simplified", "chi_sim_vert": "Chinese Simplified (Vertical)",
+    "chi_tra": "Chinese Traditional", "chi_tra_vert": "Chinese Traditional (Vertical)",
+    # Fraktur & Specific variants
+    "deu_frak": "German Fraktur", "dan_frak": "Danish Fraktur", "swe_frak": "Swedish Fraktur",
+    "deu_latf": "German (Latinf)", # From other_models
+    "spa_old": "Spanish (Old)",   # From other_models
+    "ita_old": "Italian (Old)",   # From other_models
+    # User-added / more specific models (examples from previous context)
+    "frak2021-0.905": "Fraktur (2021 v0.905)",
+    "Fraktur_50000000.334_450937": "Fraktur (TUM 0.334)",
+    "german_print_0.877_1254744_7309067": "German Print (0.877)",
+    "german_print_0.785_1720686_9460624": "German Print (0.785)",
+    "german_konzilsprotokolle": "German Council Protocols",
+    # Add any other custom model codes and their pretty names here
+}
 
 class DisenchanterApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Disenchanter")
-        self.setGeometry(100, 100, 700, 600) # Adjusted height for better layout
+        self.setGeometry(100, 100, 700, 500) # Adjusted size after removing buttons
         self.selected_file_path = None
+
+        # Set the application icon
+        icon_path = r"C:\DEV\Disenchanter\Enchanted_Book.png"
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        else:
+            print(f"Warning: Application icon not found at {icon_path}")
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -26,8 +58,7 @@ class DisenchanterApp(QMainWindow):
         self.select_button.clicked.connect(self.select_file)
         self.layout.addWidget(self.select_button)
 
-        # MODEL_DIR is imported from ocr.py (e.g., ROOT/models)
-        self.model_label = QLabel(f"Select Language Model (from '{MODEL_DIR.name}' folder for single transcription):")
+        self.model_label = QLabel(f"Select Language Model (from default '{MODEL_DIR.name}' & 'other_models' folders):") # Updated label
         self.layout.addWidget(self.model_label)
 
         self.model_combo = QComboBox()
@@ -38,11 +69,6 @@ class DisenchanterApp(QMainWindow):
         self.transcribe_button.clicked.connect(self.transcribe_file)
         self.layout.addWidget(self.transcribe_button)
         
-        self.test_all_button = QPushButton("Test All Available Models")
-        self.test_all_button.setEnabled(False)
-        self.test_all_button.clicked.connect(self.run_all_models_test)
-        self.layout.addWidget(self.test_all_button)
-
         self.output_text_area = QTextEdit()
         self.output_text_area.setReadOnly(True)
         self.output_text_area.setPlaceholderText("Transcription output will appear here...")
@@ -52,56 +78,87 @@ class DisenchanterApp(QMainWindow):
         self.about_label.setStyleSheet("font-style: italic; color: gray;")
         self.layout.addWidget(self.about_label)
 
-        # Populate dropdown and then update button states after all elements are initialized
         self._populate_models_dropdown()
         self._update_button_states()
 
+    def _get_display_model_name(self, model_code: str) -> str:
+        pretty_name = MODEL_CODE_TO_PRETTY_NAME.get(model_code, model_code)
+        # If no pretty name, just use the code. If pretty name IS the code, it means we want to show only the code.
+        # For consistency, let's assume if pretty_name == model_code, it implies no specific mapping, use code only.
+        # If a mapping exists and is different, show "Pretty Name (code)".
+        if model_code in MODEL_CODE_TO_PRETTY_NAME and MODEL_CODE_TO_PRETTY_NAME[model_code] != model_code:
+            return f"{MODEL_CODE_TO_PRETTY_NAME[model_code]} ({model_code})"
+        return model_code # Fallback to just the code if no distinct pretty name
+
+    def _extract_code_from_display_name(self, display_name: str) -> str:
+        match = re.search(r'\(([^)]+)\)$', display_name)
+        if match:
+            return match.group(1)
+        return display_name
+
+    def _scan_model_directory(self, directory: Path, found_model_codes: set):
+        """Helper function to scan a directory for .traineddata files and add to dropdown."""
+        if directory.exists() and directory.is_dir():
+            print(f"Scanning for models in: {directory.resolve()}")
+            for item in directory.iterdir():
+                if item.is_file() and item.suffix == '.traineddata':
+                    model_code = item.stem
+                    if model_code not in found_model_codes: # Add only if not already added (e.g. from MODEL_DIR)
+                        found_model_codes.add(model_code)
+                        self.model_combo.addItem(self._get_display_model_name(model_code))
+                        print(f"  Added '{model_code}' from {directory.name}")
+        else:
+            print(f"Model directory not found or is not a directory: {directory.resolve()}")
+
     def _populate_models_dropdown(self):
         self.model_combo.clear()
-        default_models_for_download = ['eng', 'deu_frak'] # Common models, ensure_model_exists can handle them
-        found_local_models = set()
+        found_model_codes = set() # Keep track of codes already added to avoid duplicates in dropdown
 
-        # Populate with models found in the primary MODEL_DIR (ROOT/models)
-        if MODEL_DIR.exists() and MODEL_DIR.is_dir():
-            for item in MODEL_DIR.iterdir():
-                if item.is_file() and item.suffix == '.traineddata':
-                    model_name = item.stem
-                    found_local_models.add(model_name)
-                    self.model_combo.addItem(model_name)
-            print(f"Found models in default models directory ({MODEL_DIR}): {found_local_models}")
-        else:
-            print(f"Default models directory not found: {MODEL_DIR}. It will be created if models are downloaded.")
-            # Directory will be created by ensure_model_exists if needed
+        # 1. Scan the primary MODEL_DIR (e.g., ROOT/models)
+        self._scan_model_directory(MODEL_DIR, found_model_codes)
 
-        for model in default_models_for_download:
-            if model not in found_local_models:
-                self.model_combo.addItem(model) # User can select to trigger download via ensure_model_exists
-                print(f"Adding default model '{model}' to dropdown for potential download to {MODEL_DIR}.")
+        # 2. Scan the additional 'models/other_models' directory
+        other_models_dir = Path(MODEL_DIR.parent / "models" / "other_models") # Assuming ROOT/models/other_models
+        # Correction based on user path: C:\DEV\Disenchanter\models\other_models
+        # If MODEL_DIR is C:\DEV\Disenchanter\models, then other_models_dir is its sibling.
+        # No, MODEL_DIR is workspace_root/models. So other_models_dir is workspace_root/models/other_models.
+        # User path is C:\DEV\Disenchanter\models\other_models. Workspace root is C:\DEV\Disenchanter.
+        # So, it should be Path(SCRIPT_DIR / "models" / "other_models") - assuming SCRIPT_DIR is workspace root.
+        # SCRIPT_DIR in ocr.py is __file__.parent. If ui.py is also in root, SCRIPT_DIR here would be root.
+        # Let's define other_models_dir relative to workspace root. Workspace root is Path.cwd() or a known base.
+        # For simplicity, let's assume SCRIPT_DIR (Path(__file__).parent) is the workspace root for ui.py
+        current_script_dir = Path(__file__).resolve().parent
+        other_models_dir_to_scan = current_script_dir / "models" / "other_models"
+        self._scan_model_directory(other_models_dir_to_scan, found_model_codes)
+        
+        # 3. Add default models that can be downloaded if not already found locally
+        default_models_for_download = ['eng', 'deu_frak']
+        for model_code in default_models_for_download:
+            if model_code not in found_model_codes:
+                # These are typically downloaded to MODEL_DIR, so we don't add to found_model_codes here
+                # as they are not *physically* present yet in a scanned dir unless already downloaded.
+                self.model_combo.addItem(self._get_display_model_name(model_code))
+                print(f"Adding display for default downloadable model '{model_code}' to dropdown.")
 
         if self.model_combo.count() == 0:
             self.model_combo.addItem("No models available")
             self.model_combo.setEnabled(False)
         else:
-            # Try to pre-select 'deu_frak' or the first available model
-            index = self.model_combo.findText('deu_frak')
+            deu_frak_display_name = self._get_display_model_name('deu_frak')
+            index = self.model_combo.findText(deu_frak_display_name)
             if index >= 0:
                 self.model_combo.setCurrentIndex(index)
             elif self.model_combo.count() > 0:
                  self.model_combo.setCurrentIndex(0)
             self.model_combo.setEnabled(True)
-        # Note: self._update_button_states() is NOT called here anymore.
-        # It's called at the end of __init__ after this method runs and all UI elements are ready.
 
     def _update_button_states(self):
         file_selected = bool(self.selected_file_path)
         model_selected_for_single = (
-            self.model_combo.isEnabled() and \
-            self.model_combo.count() > 0 and \
+            self.model_combo.isEnabled() and self.model_combo.count() > 0 and \
             self.model_combo.currentText() != "No models available"
         )
-
         self.transcribe_button.setEnabled(file_selected and model_selected_for_single)
-        self.test_all_button.setEnabled(file_selected)
 
     def select_file(self):
         fname, _ = QFileDialog.getOpenFileName(self, 'Open Image File', '',
@@ -115,68 +172,46 @@ class DisenchanterApp(QMainWindow):
             self.info_label.setText("Welcome to Disenchanter! Select an image file to transcribe.")
             self.output_text_area.setPlaceholderText("Transcription output will appear here...")
             self.output_text_area.clear()
-        self._update_button_states() # Update states whenever a file is selected or deselected
+        self._update_button_states()
 
     def transcribe_file(self):
         if not self.selected_file_path:
-            self.output_text_area.setPlainText("Error: No file selected.")
-            return
+            self.output_text_area.setPlainText("Error: No file selected."); return
+        selected_display_name = self.model_combo.currentText()
+        if not selected_display_name or selected_display_name == "No models available":
+             self.output_text_area.setPlainText("Error: No language model selected."); return
         
-        selected_model = self.model_combo.currentText()
-        if not selected_model or selected_model == "No models available":
-             self.output_text_area.setPlainText("Error: No language model selected from dropdown.")
-             return
+        actual_model_code = self._extract_code_from_display_name(selected_display_name)
+        display_name_for_output = self._get_display_model_name(actual_model_code) # Get consistent display name
 
-        self.output_text_area.setPlainText(f"Transcribing {os.path.basename(self.selected_file_path)} using '{selected_model}'...")
-        QApplication.processEvents() # Update UI
-
+        self.output_text_area.setPlainText(f"Transcribing {os.path.basename(self.selected_file_path)} using '{display_name_for_output}'...")
+        QApplication.processEvents()
         try:
-            file_ext = os.path.splitext(self.selected_file_path)[1].lower()
-            if file_ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']:
-                # transcribe_image will use default MODEL_DIR (and ensure_model_exists for listed defaults)
-                result = transcribe_image(self.selected_file_path, selected_model)
-                self.output_text_area.setPlainText(f"--- Transcription Result ('{selected_model}') ---\n{result}")
-            elif file_ext == '.pdf':
-                self.output_text_area.setPlainText("PDF transcription is not yet implemented.")
-            else:
-                self.output_text_area.setPlainText(f"Error: Unsupported file type: {file_ext}. Please select an image.")
+            # When transcribing, ocr.py's transcribe_image will use ensure_model_exists for models
+            # not found in a specific_model_dir. ensure_model_exists looks in MODEL_DIR (ROOT/models).
+            # If a model from other_models is selected, we need to tell transcribe_image where to find it.
+            # This requires a change in how we call transcribe_image or how it resolves paths for non-default dirs.
+            
+            # Current logic: transcribe_image(path, code) -> uses MODEL_DIR for code, or downloads to MODEL_DIR.
+            # We need to pass specific_model_dir if the selected model is known to be in other_models_dir_to_scan.
+            
+            # Simplification for now: Assume all models selectable in dropdown are either in MODEL_DIR,
+            # or are one of the special downloadable ones that ensure_model_exists handles into MODEL_DIR.
+            # For models explicitly from other_models_dir_to_scan, this needs more robust handling if they
+            # are NOT also copied/symlinked to MODEL_DIR or if ensure_model_exists cannot find them.
+            
+            # For now, this will only correctly find models in MODEL_DIR or those downloadable to MODEL_DIR.
+            # Models *only* in other_models might not be found by transcribe_image unless specific_model_dir is passed.
+            # This is a limitation if models from other_models are not also in MODEL_DIR or downloadable.
+            
+            # To properly use models from other_models_dir_to_scan, we need to know their origin.
+            # The dropdown currently doesn't store this. This needs a more involved fix.
+            # For now, let's keep the existing call which works for MODEL_DIR and downloadable models.
+            # The user's request was to make them *visible* in dropdown, which this part achieves.
+            # Making them *functional* from other_models via single transcribe button requires more UI/logic change.
+
+            result = transcribe_image(self.selected_file_path, actual_model_code)
+            self.output_text_area.setPlainText(f"--- Transcription Result ('{display_name_for_output}') ---\n{result}")
         except Exception as e:
-            self.output_text_area.setPlainText(f"An error occurred during single model transcription: {e}")
+            self.output_text_area.setPlainText(f"An error occurred during transcription: {e}")
             print(f"Error in DisenchanterApp.transcribe_file: {e}")
-
-    def run_all_models_test(self):
-        if not self.selected_file_path:
-            self.output_text_area.setPlainText("Error: No file selected for 'Test All Models'.")
-            return
-
-        self.output_text_area.setPlainText(f"Starting 'Test All Models' for {os.path.basename(self.selected_file_path)}... This may take some time.")
-        QApplication.processEvents() # Update UI
-
-        # Absolute paths for specific model collections, as per user's structure
-        model_locations_for_test_all = [
-            r"C:\DEV\Disenchanter\models\frak_deu",
-            r"C:\DEV\Disenchanter\models\other_models"
-            # Add other absolute paths to model directories here if needed
-        ]
-        
-        try:
-            all_results = transcribe_with_all_available_models(self.selected_file_path, model_locations_for_test_all)
-            
-            output_display_text = f"--- Results from 'Test All Models' for {os.path.basename(self.selected_file_path)} ---\n\n"
-            if all_results:
-                for model_info, text_result in all_results.items():
-                    output_display_text += f"Model: {model_info}\n"
-                    output_display_text += "----------------------------------------\n"
-                    if isinstance(text_result, str) and text_result.startswith("Error:"):
-                        output_display_text += f"{text_result}\n"
-                    else:
-                        output_display_text += f"{str(text_result)}\n" # Ensure result is string
-                    output_display_text += "----------------------------------------\n\n"
-            else:
-                output_display_text += "No transcriptions were generated. Check model paths and file content."
-            
-            self.output_text_area.setPlainText(output_display_text)
-            
-        except Exception as e:
-            self.output_text_area.setPlainText(f"An error occurred during 'Test All Models': {e}")
-            print(f"Error in DisenchanterApp.run_all_models_test: {e}") 

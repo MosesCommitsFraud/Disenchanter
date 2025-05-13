@@ -185,6 +185,57 @@ def transcribe_with_all_available_models(image_path: str, model_search_paths: li
         print("No .traineddata files found in the specified search directories, or all attempts failed.")
     return results
 
+def transcribe_with_specific_model_files(image_path: str, model_file_paths: list[str]) -> dict[str, str]:
+    """
+    Transcribes an image using a specific list of .traineddata model files.
+    Args:
+        image_path: Path to the image file.
+        model_file_paths: A list of absolute string paths to .traineddata files.
+    Returns:
+        A dictionary where keys are 'model_code (from /full/path/to/model.traineddata)'
+        and values are the transcription results.
+    """
+    results = {}
+    if not model_file_paths:
+        print("No model files provided for transcription.")
+        return {"Info": "No model files were selected for testing."}
+
+    print(f"Attempting transcription with {len(model_file_paths)} specific model files.")
+    for model_file_str_path in model_file_paths:
+        try:
+            model_file = Path(model_file_str_path)
+            if not model_file.is_file() or model_file.suffix != '.traineddata':
+                print(f"Warning: Skipping invalid or non-.traineddata file: {model_file_str_path}")
+                results[f"Invalid file ({model_file.name})"] = f"Error: Not a valid .traineddata file path: {model_file_str_path}"
+                continue
+
+            language_code = model_file.stem
+            specific_model_dir = model_file.parent
+            
+            print(f"Attempting transcription with model '{language_code}' from file: {model_file}")
+            
+            transcription_result = transcribe_image(
+                image_path=image_path,
+                language_code=language_code,
+                specific_model_dir=specific_model_dir
+            )
+            
+            # Use the full model file path in the key for clarity, as these are custom selections
+            result_key = f"{language_code} (from file: {model_file.as_posix()})"
+            results[result_key] = transcription_result
+            print(f"Finished transcription attempt for model file: {model_file}")
+
+        except Exception as e:
+            error_key = f"Error processing {os.path.basename(model_file_str_path)}"
+            results[error_key] = f"General error processing model file {model_file_str_path}: {e}"
+            print(f"Error processing model file {model_file_str_path}: {e}")
+            
+    if not results: # Should not happen if model_file_paths was not empty, due to try/except adding error keys
+        print("No specific model files were processed, or all attempts failed.")
+        # results["Info"] = "No specific model files processed or all failed." # Redundant if try/except adds error keys
+
+    return results
+
 # Placeholder for PDF processing
 # def transcribe_pdf(pdf_path):
 #     """Extracts images from a PDF and transcribes them."""
