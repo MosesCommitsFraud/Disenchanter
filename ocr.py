@@ -16,11 +16,11 @@ try:
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     # Attempt to get version to confirm Tesseract command is working
     tesseract_check_version = pytesseract.get_tesseract_version()
-    print(f"Successfully set Tesseract command. Version: {tesseract_check_version}")
+    # print(f"Successfully set Tesseract command. Version: {tesseract_check_version}") # Keep less verbose
 except pytesseract.TesseractNotFoundError:
-    print(f"WARNING: Tesseract not found at {pytesseract.pytesseract.tesseract_cmd}. Please ensure Tesseract is installed and the path is correct.")
+    print(f"WARNING: Tesseract not found at {pytesseract.pytesseract.tesseract_cmd}.")
 except Exception as e:
-    print(f"WARNING: An issue occurred while setting Tesseract command or getting version: {e}")
+    print(f"WARNING: Tesseract command issue: {e}")
 
 def ensure_model_exists(lang_code: str):
     """Checks if a Tesseract model exists in the local MODEL_DIR, downloads it if not."""
@@ -30,10 +30,10 @@ def ensure_model_exists(lang_code: str):
     model_url = f"https://github.com/tesseract-ocr/tessdata/raw/main/{model_filename}"
 
     if model_path.exists():
-        print(f"Model '{lang_code}' found in local directory: {model_path}")
+        # print(f"Model '{lang_code}' found: {model_path}") # Keep less verbose
         return str(MODEL_DIR.resolve()) # Return the directory path
 
-    print(f"Model '{lang_code}' not found in {MODEL_DIR}. Attempting to download from {model_url}...")
+    # print(f"Model '{lang_code}' not found. Downloading from {model_url}...") # Keep less verbose
     tmp_model_path = None
     try:
         MODEL_DIR.mkdir(parents=True, exist_ok=True) # Ensure MODEL_DIR exists
@@ -46,7 +46,7 @@ def ensure_model_exists(lang_code: str):
                 f.write(chunk)
         
         shutil.move(str(tmp_model_path), str(model_path))
-        print(f"Model '{lang_code}' downloaded successfully to {model_path}")
+        # print(f"Model '{lang_code}' downloaded to {model_path}") # Keep less verbose
         return str(MODEL_DIR.resolve())
     except requests.exceptions.RequestException as e:
         print(f"Error downloading model '{lang_code}': {e}")
@@ -61,26 +61,18 @@ def ensure_model_exists(lang_code: str):
 
 def transcribe_image(image_path: str, language_code: str, specific_model_dir: Path | None = None):
     """
-    Transcribes text from an image, returning plain text and structured word data.
+    Transcribes text, returning plain text and structured word data with unique IDs.
     Returns:
-        tuple: (plain_text: str, word_data: list[dict]) or (error_message_str, None) in case of error.
-        word_data is a list of dicts: [{'text', 'left', 'top', 'width', 'height', 'conf'} ...]
+        tuple: (plain_text: str, word_data: list[dict]) or (error_message_str, None).
+        word_data items: {'word_id', 'text', 'left', 'top', 'width', 'height', 'conf'}.
     """
     original_tessdata_prefix = os.environ.get('TESSDATA_PREFIX')
     try:
-        try:
-            tesseract_version = pytesseract.get_tesseract_version()
-            # print(f"Using Tesseract version: {tesseract_version}") # Less verbose
-        except pytesseract.TesseractNotFoundError:
-            error_msg = f"Tesseract not found (cmd: '{pytesseract.pytesseract.tesseract_cmd}'). Set path in ocr.py."
-            return error_msg, None
-        except Exception as e:
-            return f"Error accessing Tesseract: {e}", None
+        try: pytesseract.get_tesseract_version() # Quick check
+        except Exception as e: return f"Tesseract access error: {e}", None
 
-        if not os.path.exists(image_path):
-            return f"Error: Image file not found at {image_path}", None
+        if not os.path.exists(image_path): return f"Error: Image not found: {image_path}", None
 
-        # img_pil = Image.open(image_path) # Opened later for pytesseract
         tessdata_dir_to_use: Path
         if specific_model_dir:
             model_file_path = specific_model_dir / f"{language_code}.traineddata"
@@ -89,33 +81,26 @@ def transcribe_image(image_path: str, language_code: str, specific_model_dir: Pa
             tessdata_dir_to_use = specific_model_dir.resolve()
         else:
             resolved_model_dir_str = ensure_model_exists(language_code)
-            if not resolved_model_dir_str:
-                return f"Error: Failed to ensure model '{language_code}' in {MODEL_DIR.resolve()}.", None
+            if not resolved_model_dir_str: return f"Error: Failed to ensure model '{language_code}'.", None
             tessdata_dir_to_use = Path(resolved_model_dir_str)
 
         os.environ['TESSDATA_PREFIX'] = str(tessdata_dir_to_use)
-        # print(f"Temp TESSDATA_PREFIX: {tessdata_dir_to_use}") # Less verbose
+        custom_config = f'--tessdata-dir {tessdata_dir_to_use.as_posix()}'
 
-        tessdata_path_for_config = tessdata_dir_to_use.as_posix()
-        custom_config = f'--tessdata-dir {tessdata_path_for_config}'
-        # print(f"Tesseract config: {custom_config} with lang '{language_code}'") # Less verbose
-
-        # Use image_to_data to get detailed information including bounding boxes
-        # Output.DICT returns a dictionary where keys are headers like 'level', 'text', 'left', etc.
         data = pytesseract.image_to_data(image_path, lang=language_code, config=custom_config, output_type=pytesseract.Output.DICT)
         
         word_data = []
         plain_text_lines = []
         current_line_words = []
-        last_block_num, last_par_num, last_line_num = -1, -1, -1
+        last_block_par_line = (-1, -1, -1)
+        word_id_counter = 0 # Initialize unique ID counter for words
 
-        n_boxes = len(data['level'])
-        for i in range(n_boxes):
-            # We are interested in word-level data (level 5)
-            if int(data['level'][i]) == 5 and data['text'][i].strip(): # level 5 is word
-                conf = int(float(data['conf'][i])) # Ensure conf is int
-                if conf > -1: # -1 means it's not a valid word box (e.g. control character)
+        for i in range(len(data['level'])):
+            if int(data['level'][i]) == 5 and data['text'][i].strip(): # Level 5 is word
+                conf = int(float(data['conf'][i]))
+                if conf > -1: # Valid word box
                     word_info = {
+                        'word_id': word_id_counter, # Add unique word ID
                         'text': data['text'][i],
                         'left': int(data['left'][i]),
                         'top': int(data['top'][i]),
@@ -124,23 +109,19 @@ def transcribe_image(image_path: str, language_code: str, specific_model_dir: Pa
                         'conf': conf
                     }
                     word_data.append(word_info)
+                    word_id_counter += 1 # Increment for next word
 
-                    # Reconstruct plain text maintaining approximate line breaks
-                    block_num = int(data['block_num'][i])
-                    par_num = int(data['par_num'][i])
-                    line_num = int(data['line_num'][i])
-
-                    if last_line_num != -1 and (block_num != last_block_num or par_num != last_par_num or line_num != last_line_num):
+                    # Reconstruct plain text lines
+                    current_block_par_line = (int(data['block_num'][i]), int(data['par_num'][i]), int(data['line_num'][i]))
+                    if last_block_par_line != (-1,-1,-1) and current_block_par_line != last_block_par_line:
                         plain_text_lines.append(" ".join(current_line_words))
                         current_line_words = []
                     current_line_words.append(data['text'][i])
-                    
-                    last_block_num, last_par_num, last_line_num = block_num, par_num, line_num
+                    last_block_par_line = current_block_par_line
         
-        if current_line_words: # Append any remaining words from the last line
-            plain_text_lines.append(" ".join(current_line_words))
-
+        if current_line_words: plain_text_lines.append(" ".join(current_line_words))
         plain_text = "\n".join(plain_text_lines)
+        
         return plain_text, word_data
 
     except pytesseract.TesseractError as e:
@@ -148,10 +129,8 @@ def transcribe_image(image_path: str, language_code: str, specific_model_dir: Pa
     except Exception as e:
         return f"Unexpected OCR Error ({language_code}): {str(e).replace('\n', ' ')}", None
     finally:
-        if original_tessdata_prefix is not None:
-            os.environ['TESSDATA_PREFIX'] = original_tessdata_prefix
-        elif 'TESSDATA_PREFIX' in os.environ:
-            del os.environ['TESSDATA_PREFIX']
+        if original_tessdata_prefix is not None: os.environ['TESSDATA_PREFIX'] = original_tessdata_prefix
+        elif 'TESSDATA_PREFIX' in os.environ: del os.environ['TESSDATA_PREFIX']
 
 def transcribe_with_all_available_models(image_path: str, model_search_paths: list[str]) -> dict[str, str]:
     """
