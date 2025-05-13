@@ -59,9 +59,16 @@ def ensure_model_exists(lang_code: str):
             tmp_model_path.unlink()
         return None
 
-def transcribe_image(image_path: str, language_code: str, specific_model_dir: Path | None = None):
+def transcribe_image(image_path: str, language_code: str, specific_model_dir: Path | None = None, roi: tuple[int, int, int, int] | None = None):
     """
     Transcribes text, returning plain text and structured word data with unique IDs.
+    Can process a specific Region of Interest (ROI) if provided.
+    Args:
+        image_path (str): Path to the image file.
+        language_code (str): Tesseract language code.
+        specific_model_dir (Path | None): Path to a directory containing the model. If None, uses MODEL_DIR and ensures model exists.
+        roi (tuple[int, int, int, int] | None): Optional. A tuple (x, y, width, height) defining the ROI in original image coordinates.
+                                                 If None, the whole image is processed.
     Returns:
         tuple: (plain_text: str, word_data: list[dict]) or (error_message_str, None).
         word_data items: {'word_id', 'text', 'left', 'top', 'width', 'height', 'conf'}.
@@ -85,9 +92,41 @@ def transcribe_image(image_path: str, language_code: str, specific_model_dir: Pa
             tessdata_dir_to_use = Path(resolved_model_dir_str)
 
         os.environ['TESSDATA_PREFIX'] = str(tessdata_dir_to_use)
-        custom_config = f'--tessdata-dir {tessdata_dir_to_use.as_posix()}'
+        custom_config = f'--tessdata-dir {tessdata_dir_to_use.as_posix()}' # Keep as_posix for Tesseract path
 
-        data = pytesseract.image_to_data(image_path, lang=language_code, config=custom_config, output_type=pytesseract.Output.DICT)
+        image_to_process: Image.Image | str = image_path
+        roi_offset_x, roi_offset_y = 0, 0
+
+        if roi and len(roi) == 4:
+            try:
+                pil_image = Image.open(image_path)
+                x, y, w, h = roi
+                # Pillow crop box is (left, upper, right, lower)
+                crop_box = (int(x), int(y), int(x + w), int(y + h))
+                
+                # Ensure crop box is within image bounds
+                img_w, img_h = pil_image.size
+                crop_box = (
+                    max(0, crop_box[0]), 
+                    max(0, crop_box[1]), 
+                    min(img_w, crop_box[2]), 
+                    min(img_h, crop_box[3])
+                )
+                
+                if crop_box[2] > crop_box[0] and crop_box[3] > crop_box[1]: # Check if valid crop area remains
+                    image_to_process = pil_image.crop(crop_box)
+                    roi_offset_x, roi_offset_y = crop_box[0], crop_box[1]
+                    print(f"OCR: Processing ROI: {crop_box}, offset for coords: ({roi_offset_x}, {roi_offset_y})")
+                else:
+                    print(f"OCR Warning: ROI {roi} resulted in an invalid crop area {crop_box} for image size {pil_image.size}. Processing full image.")
+                    # Fallthrough to process full image if crop is invalid
+
+            except Exception as e:
+                print(f"OCR Warning: Error processing ROI {roi}: {e}. Processing full image.")
+                # Fallthrough to process full image
+
+        # Tesseract can take a PIL Image object or a file path
+        data = pytesseract.image_to_data(image_to_process, lang=language_code, config=custom_config, output_type=pytesseract.Output.DICT)
         
         word_data = []
         plain_text_lines = []
@@ -102,8 +141,8 @@ def transcribe_image(image_path: str, language_code: str, specific_model_dir: Pa
                     word_info = {
                         'word_id': word_id_counter, # Add unique word ID
                         'text': data['text'][i],
-                        'left': int(data['left'][i]),
-                        'top': int(data['top'][i]),
+                        'left': int(data['left'][i]) + roi_offset_x, # Adjust by ROI offset
+                        'top': int(data['top'][i]) + roi_offset_y,   # Adjust by ROI offset
                         'width': int(data['width'][i]),
                         'height': int(data['height'][i]),
                         'conf': conf
