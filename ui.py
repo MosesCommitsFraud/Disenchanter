@@ -1,9 +1,10 @@
 # Placeholder for UI elements using PyQt6
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, 
-    QApplication, QComboBox, QTextEdit
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, 
+    QApplication, QComboBox, QTextEdit, QSplitter
 )
-from PyQt6.QtGui import QIcon # Import QIcon
+from PyQt6.QtGui import QIcon, QPixmap # Added QPixmap
+from PyQt6.QtCore import Qt # Added Qt for alignment and scaling
 import os
 import re # For parsing model codes
 from pathlib import Path
@@ -35,9 +36,11 @@ MODEL_CODE_TO_PRETTY_NAME = {
 class DisenchanterApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Disenchanter")
-        self.setGeometry(100, 100, 700, 500) # Adjusted size after removing buttons
+        self.setWindowTitle("Disenchanter - Side-by-Side OCR Viewer")
+        self.setGeometry(50, 50, 1200, 700) # Larger window for side-by-side view
         self.selected_file_path = None
+        self.current_word_data = None # To store word bounding box data
+        self.current_pixmap = None # To store the original image pixmap
 
         # Set the application icon
         icon_path = r"C:\DEV\Disenchanter\Enchanted_Book.png"
@@ -46,37 +49,55 @@ class DisenchanterApp(QMainWindow):
         else:
             print(f"Warning: Application icon not found at {icon_path}")
 
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.layout = QVBoxLayout()
-        self.central_widget.setLayout(self.layout)
+        # Main layout container (vertical)
+        main_container = QWidget()
+        self.setCentralWidget(main_container)
+        main_layout = QVBoxLayout(main_container)
 
-        self.info_label = QLabel("Welcome to Disenchanter! Select an image file to transcribe.")
-        self.layout.addWidget(self.info_label)
+        # Top controls area (horizontal)
+        top_controls_widget = QWidget()
+        top_controls_layout = QHBoxLayout(top_controls_widget)
+        main_layout.addWidget(top_controls_widget)
 
-        self.select_button = QPushButton("Select Image File")
+        self.info_label = QLabel("Select Image File")
+        top_controls_layout.addWidget(self.info_label)
+        self.select_button = QPushButton("Select Image")
         self.select_button.clicked.connect(self.select_file)
-        self.layout.addWidget(self.select_button)
-
-        self.model_label = QLabel(f"Select Language Model (from default '{MODEL_DIR.name}' & 'other_models' folders):") # Updated label
-        self.layout.addWidget(self.model_label)
-
+        top_controls_layout.addWidget(self.select_button)
+        
+        self.model_label = QLabel("Model:")
+        top_controls_layout.addWidget(self.model_label)
         self.model_combo = QComboBox()
-        self.layout.addWidget(self.model_combo)
+        top_controls_layout.addWidget(self.model_combo, 1) # Add stretch factor
 
-        self.transcribe_button = QPushButton("Transcribe with Selected Model")
+        self.transcribe_button = QPushButton("Transcribe")
         self.transcribe_button.setEnabled(False)
         self.transcribe_button.clicked.connect(self.transcribe_file)
-        self.layout.addWidget(self.transcribe_button)
-        
+        top_controls_layout.addWidget(self.transcribe_button)
+
+        # --- Splitter for Image and Text --- 
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(self.splitter, 1) # Add stretch factor to splitter
+
+        # Image Viewer Area (Left side of splitter)
+        self.image_viewer_label = QLabel("Image will appear here.")
+        self.image_viewer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_viewer_label.setMinimumSize(400, 300) # Minimum size for usability
+        self.splitter.addWidget(self.image_viewer_label)
+
+        # Text Output Area (Right side of splitter)
         self.output_text_area = QTextEdit()
         self.output_text_area.setReadOnly(True)
-        self.output_text_area.setPlaceholderText("Transcription output will appear here...")
-        self.layout.addWidget(self.output_text_area)
+        self.output_text_area.setPlaceholderText("Transcription output...")
+        self.output_text_area.setMinimumSize(400, 300)
+        self.splitter.addWidget(self.output_text_area)
+        
+        self.splitter.setSizes([600, 600]) # Initial equal sizes
 
+        # About label at the bottom
         self.about_label = QLabel("Disenchanter by MosesCommitsFraud")
         self.about_label.setStyleSheet("font-style: italic; color: gray;")
-        self.layout.addWidget(self.about_label)
+        main_layout.addWidget(self.about_label, 0, Qt.AlignmentFlag.AlignRight)
 
         self._populate_models_dropdown()
         self._update_button_states()
@@ -165,12 +186,32 @@ class DisenchanterApp(QMainWindow):
                                                "Image files (*.jpg *.jpeg *.png *.bmp *.tiff);;All files (*.*)")
         if fname:
             self.selected_file_path = fname
-            self.info_label.setText(f"Selected File: {os.path.basename(self.selected_file_path)}")
+            self.info_label.setText(f"Selected: {os.path.basename(fname)}")
             self.output_text_area.setPlainText("File selected. Ready to transcribe.")
+            self.current_word_data = None # Clear previous OCR data
+            try:
+                self.current_pixmap = QPixmap(fname)
+                if self.current_pixmap.isNull():
+                    self.image_viewer_label.setText(f"Error: Could not load image '{os.path.basename(fname)}'.")
+                    self.current_pixmap = None
+                else:
+                    # Scale pixmap to fit the label while maintaining aspect ratio
+                    self.image_viewer_label.setPixmap(self.current_pixmap.scaled(
+                        self.image_viewer_label.size(), 
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    ))
+            except Exception as e:
+                self.image_viewer_label.setText(f"Error loading image: {e}")
+                self.current_pixmap = None
+                print(f"Error in select_file (loading pixmap): {e}")
         else:
             self.selected_file_path = None
-            self.info_label.setText("Welcome to Disenchanter! Select an image file to transcribe.")
-            self.output_text_area.setPlaceholderText("Transcription output will appear here...")
+            self.current_pixmap = None
+            self.current_word_data = None
+            self.info_label.setText("Select Image File")
+            self.image_viewer_label.setText("Image will appear here.")
+            self.output_text_area.setPlaceholderText("Transcription output...")
             self.output_text_area.clear()
         self._update_button_states()
 
@@ -215,3 +256,13 @@ class DisenchanterApp(QMainWindow):
         except Exception as e:
             self.output_text_area.setPlainText(f"An error occurred during transcription: {e}")
             print(f"Error in DisenchanterApp.transcribe_file: {e}")
+
+    # Override resizeEvent to rescale the image when the window (and thus label) is resized
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.current_pixmap and not self.current_pixmap.isNull() and self.image_viewer_label.pixmap():
+            self.image_viewer_label.setPixmap(self.current_pixmap.scaled(
+                self.image_viewer_label.size(), 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            ))

@@ -1,6 +1,6 @@
 # Placeholder for OCR logic using pytesseract
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageDraw # Added ImageDraw for future box drawing (though not used in this step directly in ocr.py)
 import os
 import requests # For downloading models
 from pathlib import Path # For cross-platform path handling
@@ -60,77 +60,98 @@ def ensure_model_exists(lang_code: str):
         return None
 
 def transcribe_image(image_path: str, language_code: str, specific_model_dir: Path | None = None):
-    """Transcribes text from an image file using the specified language model and Tesseract settings."""
+    """
+    Transcribes text from an image, returning plain text and structured word data.
+    Returns:
+        tuple: (plain_text: str, word_data: list[dict]) or (error_message_str, None) in case of error.
+        word_data is a list of dicts: [{'text', 'left', 'top', 'width', 'height', 'conf'} ...]
+    """
     original_tessdata_prefix = os.environ.get('TESSDATA_PREFIX')
     try:
-        # Confirm Tesseract executable is accessible (based on tesseract_cmd setting)
         try:
             tesseract_version = pytesseract.get_tesseract_version()
-            print(f"Using Tesseract version: {tesseract_version}")
+            # print(f"Using Tesseract version: {tesseract_version}") # Less verbose
         except pytesseract.TesseractNotFoundError:
-            error_msg = (
-                f"Tesseract not found or not configured correctly. "
-                f"Current tesseract_cmd: '{pytesseract.pytesseract.tesseract_cmd}'. "
-                "Please install Tesseract and/or set the correct path in ocr.py."
-            )
-            print(f"Error: {error_msg}")
-            return f"Error: {error_msg}"
-        except Exception as e: # Catch other potential errors from get_tesseract_version
-            error_msg = f"Error accessing Tesseract: {e}. Check Tesseract installation and configuration."
-            print(f"Error: {error_msg}")
-            return f"Error: {error_msg}"
+            error_msg = f"Tesseract not found (cmd: '{pytesseract.pytesseract.tesseract_cmd}'). Set path in ocr.py."
+            return error_msg, None
+        except Exception as e:
+            return f"Error accessing Tesseract: {e}", None
 
         if not os.path.exists(image_path):
-            return f"Error: Image file not found at {image_path}"
+            return f"Error: Image file not found at {image_path}", None
 
-        img = Image.open(image_path)
+        # img_pil = Image.open(image_path) # Opened later for pytesseract
         tessdata_dir_to_use: Path
-
         if specific_model_dir:
-            # Using a specific directory provided for this model
             model_file_path = specific_model_dir / f"{language_code}.traineddata"
             if not model_file_path.is_file():
-                error_msg = f"Error: Model file '{model_file_path.name}' not found or is not a file in the specified directory '{specific_model_dir.resolve()}'."
-                print(error_msg)
-                return error_msg
+                return f"Error: Model '{model_file_path.name}' not in '{specific_model_dir.resolve()}'.", None
             tessdata_dir_to_use = specific_model_dir.resolve()
-            print(f"Using specific model '{language_code}' from custom directory: {tessdata_dir_to_use}")
         else:
-            # Using default MODEL_DIR, attempt to ensure model exists (download if needed)
             resolved_model_dir_str = ensure_model_exists(language_code)
             if not resolved_model_dir_str:
-                return f"Error: Failed to ensure language model '{language_code}' exists in default location ({MODEL_DIR.resolve()})."
+                return f"Error: Failed to ensure model '{language_code}' in {MODEL_DIR.resolve()}.", None
             tessdata_dir_to_use = Path(resolved_model_dir_str)
-            print(f"Using model '{language_code}' from default directory: {tessdata_dir_to_use}")
 
-        # Set TESSDATA_PREFIX to the directory containing the .traineddata files
         os.environ['TESSDATA_PREFIX'] = str(tessdata_dir_to_use)
-        print(f"Temporarily set TESSDATA_PREFIX to: {tessdata_dir_to_use}")
+        # print(f"Temp TESSDATA_PREFIX: {tessdata_dir_to_use}") # Less verbose
 
-        # Configure Tesseract: use forward slashes for --tessdata-dir and no quotes if path has no spaces
         tessdata_path_for_config = tessdata_dir_to_use.as_posix()
         custom_config = f'--tessdata-dir {tessdata_path_for_config}'
+        # print(f"Tesseract config: {custom_config} with lang '{language_code}'") # Less verbose
+
+        # Use image_to_data to get detailed information including bounding boxes
+        # Output.DICT returns a dictionary where keys are headers like 'level', 'text', 'left', etc.
+        data = pytesseract.image_to_data(image_path, lang=language_code, config=custom_config, output_type=pytesseract.Output.DICT)
         
-        print(f"Using Tesseract config: {custom_config} with lang '{language_code}'")
-        text = pytesseract.image_to_string(img, lang=language_code, config=custom_config)
+        word_data = []
+        plain_text_lines = []
+        current_line_words = []
+        last_block_num, last_par_num, last_line_num = -1, -1, -1
+
+        n_boxes = len(data['level'])
+        for i in range(n_boxes):
+            # We are interested in word-level data (level 5)
+            if int(data['level'][i]) == 5 and data['text'][i].strip(): # level 5 is word
+                conf = int(float(data['conf'][i])) # Ensure conf is int
+                if conf > -1: # -1 means it's not a valid word box (e.g. control character)
+                    word_info = {
+                        'text': data['text'][i],
+                        'left': int(data['left'][i]),
+                        'top': int(data['top'][i]),
+                        'width': int(data['width'][i]),
+                        'height': int(data['height'][i]),
+                        'conf': conf
+                    }
+                    word_data.append(word_info)
+
+                    # Reconstruct plain text maintaining approximate line breaks
+                    block_num = int(data['block_num'][i])
+                    par_num = int(data['par_num'][i])
+                    line_num = int(data['line_num'][i])
+
+                    if last_line_num != -1 and (block_num != last_block_num or par_num != last_par_num or line_num != last_line_num):
+                        plain_text_lines.append(" ".join(current_line_words))
+                        current_line_words = []
+                    current_line_words.append(data['text'][i])
+                    
+                    last_block_num, last_par_num, last_line_num = block_num, par_num, line_num
         
-        # The calling function in ui.py will format the full message
-        return text
+        if current_line_words: # Append any remaining words from the last line
+            plain_text_lines.append(" ".join(current_line_words))
+
+        plain_text = "\n".join(plain_text_lines)
+        return plain_text, word_data
+
     except pytesseract.TesseractError as e:
-        error_detail = str(e).replace("\n", " ") # Clean up error message
-        print(f"Tesseract error during transcription for lang '{language_code}': {error_detail}")
-        return f"Error during OCR for lang '{language_code}': {error_detail}"
+        return f"OCR Error ({language_code}): {str(e).replace('\n', ' ')}", None
     except Exception as e:
-        error_detail = str(e).replace("\n", " ")
-        print(f"An unexpected error occurred during transcription for lang '{language_code}': {error_detail}")
-        return f"Error: An unexpected error occurred for lang '{language_code}': {error_detail}"
+        return f"Unexpected OCR Error ({language_code}): {str(e).replace('\n', ' ')}", None
     finally:
-        # Restore original TESSDATA_PREFIX
         if original_tessdata_prefix is not None:
             os.environ['TESSDATA_PREFIX'] = original_tessdata_prefix
         elif 'TESSDATA_PREFIX' in os.environ:
             del os.environ['TESSDATA_PREFIX']
-        # print(f"Restored TESSDATA_PREFIX to: {os.environ.get('TESSDATA_PREFIX')}") # Optional: for debugging
 
 def transcribe_with_all_available_models(image_path: str, model_search_paths: list[str]) -> dict[str, str]:
     """
