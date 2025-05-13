@@ -38,12 +38,12 @@ HIGHLIGHT_COLOR_BOX = QColor(0, 255, 0, 180)  # Bright Green for box highlight
 HIGHLIGHT_COLOR_TEXT_BG = QColor(200, 255, 200) # Light Green for text background highlight
 DEFAULT_BOX_COLOR = QColor(255, 0, 0, 180) # Red for default boxes
 HOVER_HIGHLIGHT_COLOR_BOX = QColor(255, 165, 0, 200) # Orange for hover highlight
-ROI_BOX_COLOR = QColor(0, 0, 255, 150) # Blue for ROI box
-ROI_DRAWING_PEN_STYLE = Qt.PenStyle.DashLine
+SELECTION_BOX_COLOR = QColor(0, 100, 255, 150) # A distinct blue for selection
+SELECTION_DRAWING_PEN_STYLE = Qt.PenStyle.DashLine
 
 class ImageViewer(QLabel):
     wordHovered = pyqtSignal(object) # Emits word_id (int) or None
-    roiDefined = pyqtSignal(object) # Emits QRectF (original image coordinates) or None for clear
+    selectionDefined = pyqtSignal(object) # Emits QRectF (original image coordinates) or None for clear
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,11 +59,11 @@ class ImageViewer(QLabel):
         self._highlighted_word_ids = set() # Store IDs of words to highlight (from text cursor)
         self._hovered_word_id = None # Store ID of word currently under mouse hover
         
-        # ROI Attributes
-        self._is_defining_roi = False
-        self._roi_selection_start_pos = None # QPoint, widget coordinates
-        self._current_roi_visual_rect = None # QRectF, widget coordinates, for live drawing
-        self._defined_roi_original_coords = None # QRectF, original image coordinates
+        # ROI Attributes renamed to Selection Attributes
+        self._is_defining_selection = False
+        self._selection_start_pos = None # QPoint, widget coordinates
+        self._current_selection_visual_rect = None # QRectF, widget coordinates, for live drawing
+        self._defined_selection_original_coords = None # QRectF, original image coordinates
 
         self.setMouseTracking(True)
 
@@ -76,7 +76,7 @@ class ImageViewer(QLabel):
             self._pixmap = QPixmap()
             self.setText("Image will appear here." if not self._word_data else "No image loaded or image cleared.")
             self._word_data = []
-        self.clear_defined_roi(emit_signal=False) # Clear ROI if image changes
+        self.clear_selection(emit_signal=False) # Clear selection if image changes
         self.update()
 
     def set_word_data(self, word_data_list):
@@ -89,26 +89,26 @@ class ImageViewer(QLabel):
         # However, if OCR is re-run, UI might clear and re-set ROI based on new context.
         self.update()
 
-    def start_roi_definition(self):
+    def start_selection_mode(self):
         if self._original_pixmap.isNull():
-            print("Cannot define ROI: No image loaded.")
+            print("Cannot define selection: No image loaded.")
             return
-        self.clear_defined_roi(emit_signal=True) # Clear any previous ROI first and notify
-        self._is_defining_roi = True
-        self._roi_selection_start_pos = None
-        self._current_roi_visual_rect = None
+        self.clear_selection(emit_signal=True) # Clear any previous selection first and notify
+        self._is_defining_selection = True
+        self._selection_start_pos = None
+        self._current_selection_visual_rect = None
         self.setCursor(Qt.CursorShape.CrossCursor)
-        print("ImageViewer: ROI definition started. Drag to define region.")
+        print("ImageViewer: Selection mode started. Drag to define region.")
         self.update()
 
-    def clear_defined_roi(self, emit_signal=True):
-        self._defined_roi_original_coords = None
-        self._current_roi_visual_rect = None # Clear visual cue for live drawing too
-        if self._is_defining_roi: # If was in definition mode, stop it
-            self._is_defining_roi = False
+    def clear_selection(self, emit_signal=True):
+        self._defined_selection_original_coords = None
+        self._current_selection_visual_rect = None # Clear visual cue for live drawing too
+        if self._is_defining_selection: # If was in definition mode, stop it
+            self._is_defining_selection = False
             self.unsetCursor()
         if emit_signal:
-            self.roiDefined.emit(None) # Emit None to signal ROI clearance
+            self.selectionDefined.emit(None) # Emit None to signal selection clearance
         self.update()
 
     def set_highlighted_words(self, word_ids: set):
@@ -124,7 +124,7 @@ class ImageViewer(QLabel):
             self._scale_factor = 1.0
             self._offset_x = 0
             self._offset_y = 0
-            self.clear_defined_roi(emit_signal=False) # Clear ROI if image is cleared
+            self.clear_selection(emit_signal=False) # Clear selection if image is cleared
             return
 
         self._pixmap = self._original_pixmap.scaled(
@@ -148,25 +148,25 @@ class ImageViewer(QLabel):
         painter = QPainter(self) # Start painter once
 
         # Draw ROI first, so word boxes can be on top if needed, or change order
-        if self._defined_roi_original_coords and not self._original_pixmap.isNull() and self._scale_factor > 0:
+        if self._defined_selection_original_coords and not self._original_pixmap.isNull() and self._scale_factor > 0:
             # Scale defined ROI (original coords) to current widget display coords
-            scaled_roi_left = self._defined_roi_original_coords.left() * self._scale_factor + self._offset_x
-            scaled_roi_top = self._defined_roi_original_coords.top() * self._scale_factor + self._offset_y
-            scaled_roi_width = self._defined_roi_original_coords.width() * self._scale_factor
-            scaled_roi_height = self._defined_roi_original_coords.height() * self._scale_factor
+            scaled_roi_left = self._defined_selection_original_coords.left() * self._scale_factor + self._offset_x
+            scaled_roi_top = self._defined_selection_original_coords.top() * self._scale_factor + self._offset_y
+            scaled_roi_width = self._defined_selection_original_coords.width() * self._scale_factor
+            scaled_roi_height = self._defined_selection_original_coords.height() * self._scale_factor
             
-            pen = QPen(ROI_BOX_COLOR)
+            pen = QPen(SELECTION_BOX_COLOR)
             pen.setWidth(2)
             painter.setPen(pen)
             painter.drawRect(QRectF(scaled_roi_left, scaled_roi_top, scaled_roi_width, scaled_roi_height))
 
-        elif self._is_defining_roi and self._current_roi_visual_rect and not self._current_roi_visual_rect.isNull():
+        elif self._is_defining_selection and self._current_selection_visual_rect and not self._current_selection_visual_rect.isNull():
             # Draw the live ROI rectangle (already in widget coordinates)
-            pen = QPen(ROI_BOX_COLOR)
+            pen = QPen(SELECTION_BOX_COLOR)
             pen.setWidth(1)
-            pen.setStyle(ROI_DRAWING_PEN_STYLE)
+            pen.setStyle(SELECTION_DRAWING_PEN_STYLE)
             painter.setPen(pen)
-            painter.drawRect(self._current_roi_visual_rect)
+            painter.drawRect(self._current_selection_visual_rect)
 
         if not self._pixmap.isNull() and self._word_data:
             # Word drawing logic (painter already started)
@@ -201,26 +201,26 @@ class ImageViewer(QLabel):
             self._update_scaled_pixmap_and_offsets()
 
     def mousePressEvent(self, event: QMouseEvent): # Added QMouseEvent type hint
-        if self._is_defining_roi and event.button() == Qt.MouseButton.LeftButton and not self._original_pixmap.isNull():
-            self._roi_selection_start_pos = event.pos() # This is a QPoint
+        if self._is_defining_selection and event.button() == Qt.MouseButton.LeftButton and not self._original_pixmap.isNull():
+            self._selection_start_pos = event.pos() # This is a QPoint
             # Convert QPoint to QPointF for QRectF constructor
-            start_pos_f = QPointF(self._roi_selection_start_pos)
+            start_pos_f = QPointF(self._selection_start_pos)
             # Ensure the rect is valid even if it's just a point initially
-            self._current_roi_visual_rect = QRectF(start_pos_f, start_pos_f)
+            self._current_selection_visual_rect = QRectF(start_pos_f, start_pos_f)
             self.update()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent): # Added QMouseEvent type hint
-        if self._is_defining_roi and self._roi_selection_start_pos and not self._original_pixmap.isNull():
+        if self._is_defining_selection and self._selection_start_pos and not self._original_pixmap.isNull():
             if event.buttons() & Qt.MouseButton.LeftButton: # Check if left button is held down
                 # event.pos() is QPoint, convert to QPointF for setBottomRight with QRectF
-                self._current_roi_visual_rect.setBottomRight(QPointF(event.pos()))
+                self._current_selection_visual_rect.setBottomRight(QPointF(event.pos()))
                 self.update()
                 return # Don't do word hover logic while actively drawing ROI
 
         # Existing word hover logic (if not defining ROI)
-        if not self._is_defining_roi: # Only do hover if not defining ROI
+        if not self._is_defining_selection: # Only do hover if not defining ROI
             if not self._word_data or self._scale_factor == 0:
                 if self._hovered_word_id is not None:
                     self._hovered_word_id = None
@@ -247,10 +247,10 @@ class ImageViewer(QLabel):
             super().mouseMoveEvent(event) # Allow base class to handle if needed
 
     def mouseReleaseEvent(self, event: QMouseEvent): # Added QMouseEvent type hint
-        if self._is_defining_roi and self._roi_selection_start_pos and event.button() == Qt.MouseButton.LeftButton and not self._original_pixmap.isNull():
-            if self._current_roi_visual_rect and not self._current_roi_visual_rect.isNull() and self._scale_factor > 0:
+        if self._is_defining_selection and self._selection_start_pos and event.button() == Qt.MouseButton.LeftButton and not self._original_pixmap.isNull():
+            if self._current_selection_visual_rect and not self._current_selection_visual_rect.isNull() and self._scale_factor > 0:
                 # Normalize the rectangle (top-left, bottom-right)
-                final_visual_rect = self._current_roi_visual_rect.normalized()
+                final_visual_rect = self._current_selection_visual_rect.normalized()
 
                 # Check if the visual rect has a valid size (e.g., > 1x1 pixel)
                 if final_visual_rect.width() > 1 and final_visual_rect.height() > 1:
@@ -276,26 +276,26 @@ class ImageViewer(QLabel):
                     orig_height = orig_br_y - orig_y
                     
                     if orig_width > 0 and orig_height > 0:
-                         self._defined_roi_original_coords = QRectF(orig_x, orig_y, orig_width, orig_height)
-                         print(f"ImageViewer: ROI defined (original coords): {self._defined_roi_original_coords}")
-                         self.roiDefined.emit(self._defined_roi_original_coords)
+                         self._defined_selection_original_coords = QRectF(orig_x, orig_y, orig_width, orig_height)
+                         print(f"ImageViewer: Selection defined (original coords): {self._defined_selection_original_coords}")
+                         self.selectionDefined.emit(self._defined_selection_original_coords)
                     else: # ROI became invalid after clamping
-                        print("ImageViewer: Defined ROI has zero or negative size after clamping to image boundaries.")
-                        self._defined_roi_original_coords = None # Ensure it's cleared
-                        self.roiDefined.emit(None) # Signal that ROI definition failed or resulted in nothing
+                        print("ImageViewer: Defined selection has zero or negative size after clamping to image boundaries.")
+                        self._defined_selection_original_coords = None # Ensure it's cleared
+                        self.selectionDefined.emit(None) # Signal that selection definition failed or resulted in nothing
                 else: # Visual rect was too small
-                    print("ImageViewer: Selected ROI visual area is too small.")
-                    self._defined_roi_original_coords = None
-                    self.roiDefined.emit(None) # Signal that ROI definition failed or resulted in nothing
+                    print("ImageViewer: Selected visual area is too small.")
+                    self._defined_selection_original_coords = None
+                    self.selectionDefined.emit(None) # Signal that selection definition failed or resulted in nothing
 
             else: # Scale factor is zero or visual rect is null
-                print("ImageViewer: Cannot finalize ROI (invalid scale or rect).")
-                self._defined_roi_original_coords = None
-                self.roiDefined.emit(None)
+                print("ImageViewer: Cannot finalize selection (invalid scale or rect).")
+                self._defined_selection_original_coords = None
+                self.selectionDefined.emit(None)
             
-            self._is_defining_roi = False
-            self._roi_selection_start_pos = None
-            self._current_roi_visual_rect = None # Clear the live drawing rect
+            self._is_defining_selection = False
+            self._selection_start_pos = None
+            self._current_selection_visual_rect = None # Clear the live drawing rect
             self.unsetCursor()
             self.update()
         else:
@@ -309,7 +309,7 @@ class DisenchanterApp(QMainWindow):
         self.selected_file_path = None
         self.current_word_data = [] # Store list of word dicts (with word_id)
         self.current_text_html = "" # Store the generated HTML for QTextEdit
-        self.current_roi: QRectF | None = None # Store the current ROI (original image coordinates)
+        self.current_selection_rect: QRectF | None = None # Store the current selection (original image coordinates)
 
         # Set the application icon
         icon_path = r"C:\DEV\Disenchanter\Enchanted_Book.png"
@@ -344,18 +344,18 @@ class DisenchanterApp(QMainWindow):
         self.transcribe_button.clicked.connect(self.transcribe_file)
         top_controls_layout.addWidget(self.transcribe_button)
 
-        # ROI Buttons
-        self.define_roi_button = QPushButton("Define Page/ROI")
-        self.define_roi_button.setToolTip("Click, then drag on the image to define a region for OCR.")
-        self.define_roi_button.setEnabled(False) # Enabled when image is loaded
-        self.define_roi_button.clicked.connect(self._start_roi_definition_mode)
-        top_controls_layout.addWidget(self.define_roi_button)
+        # ROI Buttons renamed to Selection Buttons
+        self.define_selection_button = QPushButton("Define Selection")
+        self.define_selection_button.setToolTip("Click, then drag on the image to define a region for OCR.")
+        self.define_selection_button.setEnabled(False) # Enabled when image is loaded
+        self.define_selection_button.clicked.connect(self._start_selection_definition_mode)
+        top_controls_layout.addWidget(self.define_selection_button)
 
-        self.clear_roi_button = QPushButton("Clear ROI")
-        self.clear_roi_button.setToolTip("Remove the defined OCR region.")
-        self.clear_roi_button.setEnabled(False) # Enabled when ROI is set
-        self.clear_roi_button.clicked.connect(self._clear_current_roi)
-        top_controls_layout.addWidget(self.clear_roi_button)
+        self.clear_selection_button = QPushButton("Clear Selection")
+        self.clear_selection_button.setToolTip("Remove the defined OCR region.")
+        self.clear_selection_button.setEnabled(False) # Enabled when selection is set
+        self.clear_selection_button.clicked.connect(self._clear_current_selection)
+        top_controls_layout.addWidget(self.clear_selection_button)
 
         # --- Splitter for Image and Text --- 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -376,8 +376,8 @@ class DisenchanterApp(QMainWindow):
         
         # Connect ImageViewer hover signal to slot
         self.image_viewer_label.wordHovered.connect(self._on_image_word_hovered)
-        # Connect ImageViewer ROI defined signal
-        self.image_viewer_label.roiDefined.connect(self._on_roi_defined)
+        # Connect ImageViewer ROI defined signal (now selectionDefined)
+        self.image_viewer_label.selectionDefined.connect(self._on_selection_defined)
 
         self.splitter.setSizes([600, 600]) # Initial equal sizes
 
@@ -467,18 +467,19 @@ class DisenchanterApp(QMainWindow):
             self.model_combo.currentText() != "No models available"
         )
         self.transcribe_button.setEnabled(file_selected and model_selected_for_single)
-        self.define_roi_button.setEnabled(file_selected) # Can define ROI if image is loaded
-        self.clear_roi_button.setEnabled(file_selected and self.current_roi is not None) # Can clear if ROI is set
+        self.define_selection_button.setEnabled(file_selected) 
+        self.clear_selection_button.setEnabled(file_selected and self.current_selection_rect is not None) 
 
     def select_file(self):
         fname, _ = QFileDialog.getOpenFileName(self, 'Open Image File', '',
                                                "Image files (*.jpg *.jpeg *.png *.bmp *.tiff);;All files (*.*)")
         if fname:
             self.selected_file_path = fname
-            self.info_label.setText(f"Selected: {os.path.basename(fname)}")
+            # self.info_label.setText(f"Selected: {os.path.basename(fname)}")
+            self.info_label.setText("Image loaded. Ready to transcribe.")
             self.output_text_area.setPlainText("File selected. Ready to transcribe.")
-            self.current_word_data = [] # Clear previous OCR data
-            self._clear_current_roi(emit_signal_from_viewer=False) # Clear ROI when new file is selected
+            self.current_word_data = [] 
+            self._clear_current_selection(emit_signal_from_viewer=False) 
 
             try:
                 pixmap_to_load = QPixmap(fname)
@@ -495,10 +496,10 @@ class DisenchanterApp(QMainWindow):
         else:
             self.selected_file_path = None
             self.current_word_data = []
-            self._clear_current_roi(emit_signal_from_viewer=False) # Clear ROI if file selection is cancelled/cleared
+            self._clear_current_selection(emit_signal_from_viewer=False) 
             self.image_viewer_label.set_pixmap(None)
             self.image_viewer_label.set_word_data([])
-            self.info_label.setText("Select Image File")
+            self.info_label.setText("Select Image File") # Default message
             self.output_text_area.setPlaceholderText("Transcription output...")
             self.output_text_area.clear()
         self._update_button_states()
@@ -516,16 +517,16 @@ class DisenchanterApp(QMainWindow):
         self.output_text_area.setHtml(f"Transcribing with <i>'{display_name_for_output}'</i>...")
         QApplication.processEvents()
         
-        roi_to_pass = None
-        if self.current_roi:
+        roi_to_pass = None # Parameter for ocr.py remains 'roi' for now
+        if self.current_selection_rect:
             # Convert QRectF to tuple (x, y, width, height) for ocr.py
             roi_to_pass = (
-                int(self.current_roi.x()), 
-                int(self.current_roi.y()), 
-                int(self.current_roi.width()), 
-                int(self.current_roi.height())
+                int(self.current_selection_rect.x()), 
+                int(self.current_selection_rect.y()), 
+                int(self.current_selection_rect.width()), 
+                int(self.current_selection_rect.height())
             )
-            print(f"UI: Passing ROI to transcribe_image: {roi_to_pass}")
+            print(f"UI: Passing selection (as ROI) to transcribe_image: {roi_to_pass}")
 
         try:
             # Define punctuation characters for stripping (used in word comparison)
@@ -674,51 +675,48 @@ class DisenchanterApp(QMainWindow):
 
     # Removed app-level resizeEvent, ImageViewer handles its own scaling and repainting on resize.
 
-    # --- ROI Handling Slots ---
-    def _start_roi_definition_mode(self):
+    # --- ROI Handling Slots --- (Renamed to Selection Handling Slots)
+    def _start_selection_definition_mode(self):
         if self.selected_file_path and not self.image_viewer_label._original_pixmap.isNull():
-            self.info_label.setText("Defining ROI: Drag on image. Transcribe again to use.")
-            self.image_viewer_label.start_roi_definition()
-            # Buttons states will be updated via _on_roi_defined or when ROI is cleared.
+            self.info_label.setText("Defining Selection: Drag on image. Transcribe again to use.")
+            self.image_viewer_label.start_selection_mode()
         else:
-            self.info_label.setText("Select an image first to define an ROI.")
+            self.info_label.setText("Select an image first to define a selection.")
 
-    def _on_roi_defined(self, roi_rect_original_coords: QRectF | None):
-        if roi_rect_original_coords and roi_rect_original_coords.isValid():
-            self.current_roi = roi_rect_original_coords
-            self.info_label.setText(f"ROI defined. Transcribe to apply. ({roi_rect_original_coords.x():.0f},{roi_rect_original_coords.y():.0f}, {roi_rect_original_coords.width():.0f}x{roi_rect_original_coords.height():.0f})")
-            print(f"App: ROI successfully defined: {self.current_roi}")
-        else: # ROI was cleared or definition failed/cancelled
-            self.current_roi = None
-            # If image viewer itself cleared it, it might be because a new image was loaded, or user cleared.
-            # If ROI definition was active and user cancelled (e.g. small rect), ImageViewer emits None.
-            if self.image_viewer_label._is_defining_roi: # Still in defining mode, but it resulted in None (e.g. tiny drag)
-                self.info_label.setText("ROI definition cancelled or area too small. Try again.")
-            elif self.selected_file_path: # Image present, but ROI cleared
-                 self.info_label.setText(f"Selected: {os.path.basename(self.selected_file_path)}. ROI cleared.")
-            else: # No image selected
+    def _on_selection_defined(self, selection_rect_original_coords: QRectF | None):
+        if selection_rect_original_coords and selection_rect_original_coords.isValid():
+            self.current_selection_rect = selection_rect_original_coords
+            # self.info_label.setText(f"Selection defined. Transcribe to apply. ({selection_rect_original_coords.x():.0f},{selection_rect_original_coords.y():.0f}, {selection_rect_original_coords.width():.0f}x{selection_rect_original_coords.height():.0f})")
+            self.info_label.setText("Selection defined. Transcribe to apply.")
+            print(f"App: Selection successfully defined: {self.current_selection_rect}")
+        else: 
+            self.current_selection_rect = None
+            if self.image_viewer_label._is_defining_selection: 
+                self.info_label.setText("Selection definition cancelled or area too small.")
+            elif self.selected_file_path: 
+                 # self.info_label.setText(f"Selected: {os.path.basename(self.selected_file_path)}. Selection cleared.")
+                 self.info_label.setText("Image loaded. Selection cleared.")
+            else: 
                  self.info_label.setText("Select Image File")
 
-            print("App: ROI cleared or definition failed.")
+            print("App: Selection cleared or definition failed.")
         self._update_button_states()
 
-    def _clear_current_roi(self, emit_signal_from_viewer=True):
-        """Clears the current ROI in the app and tells the image viewer to clear its visual."""
-        self.current_roi = None
+    def _clear_current_selection(self, emit_signal_from_viewer=True):
+        """Clears the current selection in the app and tells the image viewer to clear its visual."""
+        self.current_selection_rect = None
         if emit_signal_from_viewer:
-            # This will trigger _on_roi_defined(None) eventually if viewer emits the signal
-            self.image_viewer_label.clear_defined_roi() 
+            self.image_viewer_label.clear_selection() 
         else:
-            # Called when we don't want image_viewer to re-emit roiDefined(None)
-            # e.g. when a new file is loaded, select_file itself calls this.
-            self.image_viewer_label._defined_roi_original_coords = None # Directly clear viewer's stored ROI
-            self.image_viewer_label.update() # Repaint viewer
+            self.image_viewer_label._defined_selection_original_coords = None 
+            self.image_viewer_label.update() 
         
         if self.selected_file_path:
-             self.info_label.setText(f"Selected: {os.path.basename(self.selected_file_path)}. ROI cleared.")
+             # self.info_label.setText(f"Selected: {os.path.basename(self.selected_file_path)}. Selection cleared.")
+             self.info_label.setText("Image loaded. Selection cleared.")
         else:
-            self.info_label.setText("Select Image File")
-        print("App: Current ROI cleared by user action or programmatically.")
+            self.info_label.setText("Select Image File") # Default message
+        print("App: Current selection cleared by user action or programmatically.")
         self._update_button_states()
         
-    # --- End ROI Handling Slots ---
+    # --- End Selection Handling Slots ---
