@@ -6,197 +6,183 @@ import requests # For downloading models
 from pathlib import Path # For cross-platform path handling
 import shutil # For saving downloaded file
 
-# --- UPDATED: Define models directory relative to this file --- 
-# Get the directory where ocr.py is located
+# --- Define models directory relative to this file (which is in workspace root) ---
 SCRIPT_DIR = Path(__file__).resolve().parent
-# Define the models directory path relative to the script directory
-MODEL_DIR = SCRIPT_DIR / "models"
-# CACHE_DIR = Path.home() / ".Disenchanter" / "tessdata" # Old cache dir
-# ------------------------------------------------------------
+MODEL_DIR = SCRIPT_DIR / "models" # Default models will be stored in ROOT/models
 
-# Optional: Point pytesseract to the Tesseract executable if not in PATH
-# Example for Windows:
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-# Example for Linux/macOS (if installed in non-standard location):
-# pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'
+# --- User specific: Point pytesseract to the Tesseract executable if not in PATH ---
+# Please ensure this path is correct for your system.
+try:
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    # Attempt to get version to confirm Tesseract command is working
+    tesseract_check_version = pytesseract.get_tesseract_version()
+    print(f"Successfully set Tesseract command. Version: {tesseract_check_version}")
+except pytesseract.TesseractNotFoundError:
+    print(f"WARNING: Tesseract not found at {pytesseract.pytesseract.tesseract_cmd}. Please ensure Tesseract is installed and the path is correct.")
+except Exception as e:
+    print(f"WARNING: An issue occurred while setting Tesseract command or getting version: {e}")
 
 def ensure_model_exists(lang_code: str):
-    """Checks if a Tesseract model exists in the local models/ dir, downloads it if not."""
+    """Checks if a Tesseract model exists in the local MODEL_DIR, downloads it if not."""
     model_filename = f"{lang_code}.traineddata"
-    model_path = MODEL_DIR / model_filename # Use local models dir
+    model_path = MODEL_DIR / model_filename
+    # Standard Tesseract models repository
     model_url = f"https://github.com/tesseract-ocr/tessdata/raw/main/{model_filename}"
 
     if model_path.exists():
         print(f"Model '{lang_code}' found in local directory: {model_path}")
-        # Normalize the path for Tesseract
-        return str(MODEL_DIR.resolve()) # Return the resolved, normalized directory path
+        return str(MODEL_DIR.resolve()) # Return the directory path
 
-    print(f"Model '{lang_code}' not found in {MODEL_DIR}. Downloading from {model_url}...")
+    print(f"Model '{lang_code}' not found in {MODEL_DIR}. Attempting to download from {model_url}...")
     tmp_model_path = None
     try:
-        # Ensure local models directory exists
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Download the model
+        MODEL_DIR.mkdir(parents=True, exist_ok=True) # Ensure MODEL_DIR exists
         response = requests.get(model_url, stream=True, timeout=60)
         response.raise_for_status()
 
-        # Save the model to a temporary file first
         tmp_model_path = MODEL_DIR / f"{model_filename}.tmp"
         with open(tmp_model_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-
-        # Move temporary file to final destination
+        
         shutil.move(str(tmp_model_path), str(model_path))
-
         print(f"Model '{lang_code}' downloaded successfully to {model_path}")
-        # Normalize the path for Tesseract
-        return str(MODEL_DIR.resolve()) # Return the resolved, normalized directory path
-
+        return str(MODEL_DIR.resolve())
     except requests.exceptions.RequestException as e:
         print(f"Error downloading model '{lang_code}': {e}")
         if tmp_model_path and tmp_model_path.exists():
-            tmp_model_path.unlink()
+            tmp_model_path.unlink() # Clean up temporary file
         return None
     except Exception as e:
-        print(f"An unexpected error occurred during model download: {e}")
+        print(f"An unexpected error occurred during model download for '{lang_code}': {e}")
         if tmp_model_path and tmp_model_path.exists():
             tmp_model_path.unlink()
         return None
 
 def transcribe_image(image_path: str, language_code: str, specific_model_dir: Path | None = None):
-    """Transcribes text from a single image file using the specified language model."""
+    """Transcribes text from an image file using the specified language model and Tesseract settings."""
     original_tessdata_prefix = os.environ.get('TESSDATA_PREFIX')
     try:
-        # Check if Tesseract executable is accessible (keep this check)
+        # Confirm Tesseract executable is accessible (based on tesseract_cmd setting)
         try:
             tesseract_version = pytesseract.get_tesseract_version()
             print(f"Using Tesseract version: {tesseract_version}")
         except pytesseract.TesseractNotFoundError:
             error_msg = (
-                "Tesseract is not installed or not in your PATH. "
-                "Please install Tesseract OCR: https://github.com/tesseract-ocr/tesseract#installing-tesseract "
-                "and ensure it's added to your system's PATH or set the path in ocr.py."
+                f"Tesseract not found or not configured correctly. "
+                f"Current tesseract_cmd: '{pytesseract.pytesseract.tesseract_cmd}'. "
+                "Please install Tesseract and/or set the correct path in ocr.py."
             )
+            print(f"Error: {error_msg}")
+            return f"Error: {error_msg}"
+        except Exception as e: # Catch other potential errors from get_tesseract_version
+            error_msg = f"Error accessing Tesseract: {e}. Check Tesseract installation and configuration."
             print(f"Error: {error_msg}")
             return f"Error: {error_msg}"
 
         if not os.path.exists(image_path):
-            return f"Error: File not found at {image_path}"
+            return f"Error: Image file not found at {image_path}"
 
         img = Image.open(image_path)
-
-        # --- Language Model Handling ---
         tessdata_dir_to_use: Path
 
         if specific_model_dir:
-            # Use the provided specific model directory
-            model_file = specific_model_dir / f"{language_code}.traineddata"
-            if not model_file.is_file(): # Check if it's a file
-                error_msg = f"Error: Model file '{model_file}' not found or is not a file in specified directory {specific_model_dir.resolve()}"
+            # Using a specific directory provided for this model
+            model_file_path = specific_model_dir / f"{language_code}.traineddata"
+            if not model_file_path.is_file():
+                error_msg = f"Error: Model file '{model_file_path.name}' not found or is not a file in the specified directory '{specific_model_dir.resolve()}'."
                 print(error_msg)
                 return error_msg
             tessdata_dir_to_use = specific_model_dir.resolve()
-            print(f"Using specific model '{language_code}' from directory: {tessdata_dir_to_use}")
+            print(f"Using specific model '{language_code}' from custom directory: {tessdata_dir_to_use}")
         else:
-            # Fallback to default behavior: ensure model exists in MODEL_DIR (and download if necessary)
-            # ensure_model_exists returns the directory path as a string
+            # Using default MODEL_DIR, attempt to ensure model exists (download if needed)
             resolved_model_dir_str = ensure_model_exists(language_code)
             if not resolved_model_dir_str:
-                return f"Error: Failed to download or find language model '{language_code}' in default location."
-            tessdata_dir_to_use = Path(resolved_model_dir_str) # Convert string path to Path object
+                return f"Error: Failed to ensure language model '{language_code}' exists in default location ({MODEL_DIR.resolve()})."
+            tessdata_dir_to_use = Path(resolved_model_dir_str)
+            print(f"Using model '{language_code}' from default directory: {tessdata_dir_to_use}")
 
-        # Set TESSDATA_PREFIX environment variable for the current process
-        # This should be the directory containing the .traineddata files (e.g., tessdata/)
+        # Set TESSDATA_PREFIX to the directory containing the .traineddata files
         os.environ['TESSDATA_PREFIX'] = str(tessdata_dir_to_use)
         print(f"Temporarily set TESSDATA_PREFIX to: {tessdata_dir_to_use}")
 
-        # Configure pytesseract to use the local models/ directory
-        # The --tessdata-dir might be redundant if TESSDATA_PREFIX works, but can be kept as a fallback.
-        tessdata_path_as_posix = tessdata_dir_to_use.as_posix() # Normalize to forward slashes
-        custom_config = f'--tessdata-dir {tessdata_path_as_posix}' # Removed explicit quotes around the path
+        # Configure Tesseract: use forward slashes for --tessdata-dir and no quotes if path has no spaces
+        tessdata_path_for_config = tessdata_dir_to_use.as_posix()
+        custom_config = f'--tessdata-dir {tessdata_path_for_config}'
+        
         print(f"Using Tesseract config: {custom_config} with lang '{language_code}'")
-
         text = pytesseract.image_to_string(img, lang=language_code, config=custom_config)
-        # -----------------------------
-
-        result_message = (
-            f"Transcription result for {os.path.basename(image_path)}:\n"
-            f"---\n"
-            f"{text}\n"
-            f"---"
-        )
-        print(result_message)
+        
+        # The calling function in ui.py will format the full message
         return text
     except pytesseract.TesseractError as e:
-        print(f"Tesseract error during transcription: {e}")
-        return f"Error during OCR: {e}"
+        error_detail = str(e).replace("\n", " ") # Clean up error message
+        print(f"Tesseract error during transcription for lang '{language_code}': {error_detail}")
+        return f"Error during OCR for lang '{language_code}': {error_detail}"
     except Exception as e:
-        print(f"An unexpected error occurred during transcription: {e}")
-        return f"Error: An unexpected error occurred: {e}"
+        error_detail = str(e).replace("\n", " ")
+        print(f"An unexpected error occurred during transcription for lang '{language_code}': {error_detail}")
+        return f"Error: An unexpected error occurred for lang '{language_code}': {error_detail}"
     finally:
-        # Restore original TESSDATA_PREFIX if it was set
+        # Restore original TESSDATA_PREFIX
         if original_tessdata_prefix is not None:
             os.environ['TESSDATA_PREFIX'] = original_tessdata_prefix
         elif 'TESSDATA_PREFIX' in os.environ:
-            del os.environ['TESSDATA_PREFIX'] # Remove if we set it and it wasn't there before
-        # Conditional print to avoid KeyError if TESSDATA_PREFIX was deleted and not originally set
-        current_tessdata_prefix = os.environ.get('TESSDATA_PREFIX')
-        print(f"Restored TESSDATA_PREFIX to: {current_tessdata_prefix}")
+            del os.environ['TESSDATA_PREFIX']
+        # print(f"Restored TESSDATA_PREFIX to: {os.environ.get('TESSDATA_PREFIX')}") # Optional: for debugging
 
 def transcribe_with_all_available_models(image_path: str, model_search_paths: list[str]) -> dict[str, str]:
     """
     Transcribes an image using all .traineddata models found in the specified directories.
-
     Args:
         image_path: Path to the image file.
         model_search_paths: A list of string paths to directories containing .traineddata files.
-
     Returns:
         A dictionary where keys are 'model_name (from /path/to/directory)'
         and values are the transcription results.
     """
     results = {}
-    # Using a set for resolved absolute paths of model files to avoid re-processing
-    # if dirs overlap or model files are symlinked/duplicated.
-    processed_model_files = set()
+    processed_model_files = set() # To avoid re-processing if models are in multiple listed paths
 
     for dir_path_str in model_search_paths:
-        model_dir = Path(dir_path_str)
-        if not model_dir.is_dir():
-            print(f"Warning: Provided model search path '{dir_path_str}' is not a directory or does not exist. Skipping.")
+        try:
+            model_dir = Path(dir_path_str).resolve() # Resolve to absolute path
+            if not model_dir.is_dir():
+                print(f"Warning: Provided model search path '{dir_path_str}' (resolved to '{model_dir}') is not a directory or does not exist. Skipping.")
+                continue
+        except Exception as e:
+            print(f"Warning: Could not resolve path '{dir_path_str}': {e}. Skipping.")
             continue
 
-        print(f"Scanning for models in: {model_dir.resolve()}")
+        print(f"Scanning for models in: {model_dir}")
         for item in model_dir.iterdir():
             if item.is_file() and item.suffix == '.traineddata':
-                model_file_abs = item.resolve() # Get absolute path of the .traineddata file
+                model_file_abs = item.resolve()
 
                 if model_file_abs in processed_model_files:
-                    print(f"Skipping already processed model file: {model_file_abs}")
+                    # print(f"Skipping already processed model file: {model_file_abs}") # Optional: for debugging
                     continue
                 
                 language_code = item.stem  # e.g., "deu_frak" from "deu_frak.traineddata"
-                # The directory for this specific model is its parent directory
-                actual_model_directory = model_file_abs.parent
+                actual_model_directory = model_file_abs.parent # The directory where this .traineddata file resides
                 
                 print(f"Found model '{language_code}' in '{actual_model_directory}'. Attempting transcription...")
                 
-                # Call the modified transcribe_image, providing the specific directory for this model
                 transcription_result = transcribe_image(
                     image_path=image_path,
                     language_code=language_code,
-                    specific_model_dir=actual_model_directory
+                    specific_model_dir=actual_model_directory # Pass the specific directory
                 )
                 
+                # Use a clear key for results, including the source directory
                 result_key = f"{language_code} (from {actual_model_directory.as_posix()})"
                 results[result_key] = transcription_result
-                processed_model_files.add(model_file_abs) # Add after successful processing attempt
-                print(f"Finished transcription attempt for model '{language_code}' from '{actual_model_directory.as_posix()}'.")
+                processed_model_files.add(model_file_abs)
+                # print(f"Finished transcription attempt for model '{language_code}' from '{actual_model_directory.as_posix()}'.") # Optional: for debugging
                 
     if not results:
-        print("No .traineddata files found in the specified search directories or all attempts failed.")
+        print("No .traineddata files found in the specified search directories, or all attempts failed.")
     return results
 
 # Placeholder for PDF processing
