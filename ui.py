@@ -3,8 +3,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, 
     QApplication, QComboBox, QTextEdit, QSplitter
 )
-from PyQt6.QtGui import QIcon, QPixmap # Added QPixmap
-from PyQt6.QtCore import Qt # Added Qt for alignment and scaling
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen # Added QPainter, QColor, QPen
+from PyQt6.QtCore import Qt, QRectF # Added QRectF for floating point precision if needed for boxes
 import os
 import re # For parsing model codes
 from pathlib import Path
@@ -33,6 +33,81 @@ MODEL_CODE_TO_PRETTY_NAME = {
     # Add any other custom model codes and their pretty names here
 }
 
+class ImageViewer(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pixmap = QPixmap()
+        self._original_pixmap = QPixmap()
+        self._word_data = []
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(400, 300)
+        self._scale_factor = 1.0
+        self._offset_x = 0
+        self._offset_y = 0
+        self.setText("Image will appear here.")
+
+    def set_pixmap(self, pixmap):
+        if pixmap and not pixmap.isNull():
+            self._original_pixmap = pixmap
+            self._update_scaled_pixmap_and_offsets()
+        else:
+            self._original_pixmap = QPixmap()
+            self._pixmap = QPixmap()
+            self.setText("Image will appear here." if not self._word_data else "No image loaded or image cleared.")
+            self._word_data = []
+        self.update()
+
+    def set_word_data(self, word_data_list):
+        self._word_data = word_data_list if word_data_list else []
+        self.update()
+
+    def _update_scaled_pixmap_and_offsets(self):
+        if self._original_pixmap.isNull():
+            current_display_pixmap = self.pixmap()
+            if current_display_pixmap is not None and not current_display_pixmap.isNull():
+                super().setPixmap(QPixmap())
+            self.setText("Image will appear here.")
+            self._scale_factor = 1.0
+            self._offset_x = 0
+            self._offset_y = 0
+            return
+
+        self._pixmap = self._original_pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        super().setPixmap(self._pixmap)
+
+        if self._original_pixmap.width() > 0 and self._pixmap.width() > 0:
+            self._scale_factor = self._pixmap.width() / self._original_pixmap.width()
+        else:
+            self._scale_factor = 1.0
+        
+        self._offset_x = (self.width() - self._pixmap.width()) / 2
+        self._offset_y = (self.height() - self._pixmap.height()) / 2
+        self.setText("")
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._pixmap.isNull() and self._word_data:
+            painter = QPainter(self)
+            pen = QPen(QColor(255, 0, 0, 180))
+            pen.setWidth(1)
+            painter.setPen(pen)
+            for word in self._word_data:
+                scaled_left = int(word['left'] * self._scale_factor + self._offset_x)
+                scaled_top = int(word['top'] * self._scale_factor + self._offset_y)
+                scaled_width = int(word['width'] * self._scale_factor)
+                scaled_height = int(word['height'] * self._scale_factor)
+                painter.drawRect(scaled_left, scaled_top, scaled_width, scaled_height)
+            painter.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._original_pixmap.isNull():
+            self._update_scaled_pixmap_and_offsets()
+
 class DisenchanterApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -40,7 +115,7 @@ class DisenchanterApp(QMainWindow):
         self.setGeometry(50, 50, 1200, 700) # Larger window for side-by-side view
         self.selected_file_path = None
         self.current_word_data = None # To store word bounding box data
-        self.current_pixmap = None # To store the original image pixmap
+        # self.current_pixmap removed, ImageViewer will handle its own pixmap
 
         # Set the application icon
         icon_path = r"C:\DEV\Disenchanter\Enchanted_Book.png"
@@ -80,9 +155,7 @@ class DisenchanterApp(QMainWindow):
         main_layout.addWidget(self.splitter, 1) # Add stretch factor to splitter
 
         # Image Viewer Area (Left side of splitter)
-        self.image_viewer_label = QLabel("Image will appear here.")
-        self.image_viewer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_viewer_label.setMinimumSize(400, 300) # Minimum size for usability
+        self.image_viewer_label = ImageViewer() # Changed from QLabel to ImageViewer
         self.splitter.addWidget(self.image_viewer_label)
 
         # Text Output Area (Right side of splitter)
@@ -190,27 +263,23 @@ class DisenchanterApp(QMainWindow):
             self.output_text_area.setPlainText("File selected. Ready to transcribe.")
             self.current_word_data = None # Clear previous OCR data
             try:
-                self.current_pixmap = QPixmap(fname)
-                if self.current_pixmap.isNull():
+                pixmap_to_load = QPixmap(fname)
+                if pixmap_to_load.isNull():
+                    self.image_viewer_label.set_pixmap(None) # Clear image in viewer
                     self.image_viewer_label.setText(f"Error: Could not load image '{os.path.basename(fname)}'.")
-                    self.current_pixmap = None
                 else:
-                    # Scale pixmap to fit the label while maintaining aspect ratio
-                    self.image_viewer_label.setPixmap(self.current_pixmap.scaled(
-                        self.image_viewer_label.size(), 
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    ))
+                    self.image_viewer_label.set_pixmap(pixmap_to_load)
+                self.image_viewer_label.set_word_data(None) # Clear boxes from previous image
             except Exception as e:
+                self.image_viewer_label.set_pixmap(None)
                 self.image_viewer_label.setText(f"Error loading image: {e}")
-                self.current_pixmap = None
                 print(f"Error in select_file (loading pixmap): {e}")
         else:
             self.selected_file_path = None
-            self.current_pixmap = None
             self.current_word_data = None
+            self.image_viewer_label.set_pixmap(None)
+            self.image_viewer_label.set_word_data(None)
             self.info_label.setText("Select Image File")
-            self.image_viewer_label.setText("Image will appear here.")
             self.output_text_area.setPlaceholderText("Transcription output...")
             self.output_text_area.clear()
         self._update_button_states()
@@ -251,18 +320,22 @@ class DisenchanterApp(QMainWindow):
             # The user's request was to make them *visible* in dropdown, which this part achieves.
             # Making them *functional* from other_models via single transcribe button requires more UI/logic change.
 
-            result = transcribe_image(self.selected_file_path, actual_model_code)
-            self.output_text_area.setPlainText(f"--- Transcription Result ('{display_name_for_output}') ---\n{result}")
+            plain_text, word_data = transcribe_image(self.selected_file_path, actual_model_code)
+            if word_data is not None:
+                self.current_word_data = word_data # Store for other uses if needed
+                self.image_viewer_label.set_word_data(word_data) # Pass data to viewer for drawing boxes
+                self.output_text_area.setPlainText(f"--- Transcription Result ('{display_name_for_output}') ---\n{plain_text}")
+                # ImageViewer will repaint with boxes due to set_word_data calling self.update()
+                print(f"Transcription successful. Word count: {len(word_data)}")
+            else:
+                self.current_word_data = None
+                self.image_viewer_label.set_word_data(None) # Clear any existing boxes
+                self.output_text_area.setPlainText(plain_text) # Display error from OCR
+                print(f"OCR Error: {plain_text}")
         except Exception as e:
+            self.current_word_data = None
+            self.image_viewer_label.set_word_data(None)
             self.output_text_area.setPlainText(f"An error occurred during transcription: {e}")
             print(f"Error in DisenchanterApp.transcribe_file: {e}")
 
-    # Override resizeEvent to rescale the image when the window (and thus label) is resized
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.current_pixmap and not self.current_pixmap.isNull() and self.image_viewer_label.pixmap():
-            self.image_viewer_label.setPixmap(self.current_pixmap.scaled(
-                self.image_viewer_label.size(), 
-                Qt.AspectRatioMode.KeepAspectRatio, 
-                Qt.TransformationMode.SmoothTransformation
-            ))
+    # Removed app-level resizeEvent, ImageViewer handles its own scaling and repainting on resize.
