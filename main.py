@@ -45,20 +45,4 @@ def test_all_models_on_image_cli(image_to_test: str):
         print("No transcriptions were generated via CLI test. Check model paths or image content.")
 
 if __name__ == "__main__":
-    # To run the UI application (default action):
     main()
-
-    # --- Optional: For direct CLI testing --- 
-    # To run a direct test using test_all_models_on_image_cli, 
-    # 1. Uncomment the following lines.
-    # 2. Set 'cli_test_image_path' to an actual image file path on your system.
-    #
-    # cli_test_image_path = r"C:\path\to\your\test_image.png"  # <--- !!! SET YOUR IMAGE PATH HERE !!!
-    # placeholder_path = r"C:\path\to\your\test_image.png"
-    # 
-    # if cli_test_image_path != placeholder_path: # Basic check to see if user changed the placeholder
-    #     test_all_models_on_image_cli(cli_test_image_path)
-    # else:
-    #     # print("CLI test image path is still the placeholder. CLI test will not run.")
-    #     pass # Silently pass if placeholder is not changed, to avoid clutter when running UI
-    # --- End of Optional CLI testing block --- 
